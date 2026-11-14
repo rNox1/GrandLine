@@ -1,0 +1,55 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /characters/{code} {
+      function loggedIn(){return request.auth != null;}
+      function owner(){return loggedIn() && resource.data.ownerId == request.auth.uid;}
+      function editor(){return loggedIn() && request.auth.uid in resource.data.editors;}
+      function shape(){
+        return request.resource.data.keys().hasAll(['ownerId','editors','character','revision','createdAt','updatedAt'])
+          && request.resource.data.keys().hasOnly(['ownerId','editors','character','revision','createdAt','updatedAt'])
+          && request.resource.data.ownerId is string
+          && request.resource.data.editors is list
+          && request.resource.data.editors.size() <= 12
+          && request.resource.data.character is map
+          && request.resource.data.revision is int;
+      }
+
+      // Saber o código permite ler a ficha. Não coloque senhas/dados privados nela.
+      allow get: if true;
+
+      // A consulta "Minhas fichas" somente pode devolver documentos do dono.
+      // O aplicativo usa where('ownerId','==',request.auth.uid).
+      allow list: if loggedIn() && resource.data.ownerId == request.auth.uid;
+
+      // Somente usuários autenticados podem criar suas próprias fichas.
+      allow create: if loggedIn()
+        && code.matches('^[a-z0-9]{3}-[a-z0-9]{3}$')
+        && shape()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.editors.size() == 0
+        && request.resource.data.revision == 1;
+
+      // O proprietário controla a lista de editores.
+      // O editor apenas altera o conteúdo do personagem, nunca as permissões.
+      allow update: if shape()
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.revision == resource.data.revision + 1
+        && (
+          owner() ||
+          (editor()
+            && request.resource.data.editors == resource.data.editors
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['character','revision','updatedAt']))
+        );
+
+      allow delete: if owner();
+    }
+
+    // Qualquer outra coleção é bloqueada por padrão.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
